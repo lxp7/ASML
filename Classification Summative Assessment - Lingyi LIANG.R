@@ -6,6 +6,7 @@ install.packages("dplyr")
 install.packages("rgeos")
 install.packages("DataExplorer")
 install.packages("data.table")
+install.packages("mlr3")
 install.packages("mlr3verse")
 install.packages("paradox")
 install.packages("ranger")
@@ -16,6 +17,7 @@ library("data.table")
 library("mlr3verse")
 library("tidyverse")
 
+#data processing
 skimr::skim(bank)
 bank$ZIP.Code  <- NULL
 bank$Personal.Loan  <- as.factor(bank$Personal.Loan)
@@ -29,6 +31,7 @@ DataExplorer::plot_bar(bank, ncol = 3)
 DataExplorer::plot_histogram(bank, ncol = 3)
 DataExplorer::plot_boxplot(bank, by = "Personal.Loan", ncol = 3)
 
+#model fitting
 set.seed(100)
 bank_task <- TaskClassif$new(id = "bank",
                                backend = bank, # <- NB: no na.omit() this time
@@ -41,29 +44,21 @@ lrn_cart <- lrn("classif.rpart", predict_type = "prob")
 lrn_lda <- lrn("classif.lda", predict_type = "prob")
 lrn_lr <- lrn("classif.log_reg", predict_type = "prob")
 
-pl_missing <- po("fixfactors") %>>%
-  po("removeconstants") %>>%
-  po("imputesample", affect_columns = selector_type(c("ordered", "factor"))) %>>%
-  po("imputemean")
-
-pl_log_reg <- pl_missing %>>%
-  po(lrn_lr)
-
+#cross-validation
 cv5 <- rsmp("cv", folds = 5)
 cv5$instantiate(bank_task)
-
 
 res <- benchmark(data.table(
   task       = list(bank_task),
   learner    = list(lrn_baseline,
                     lrn_cart,
-                    lrn_cart_cp,
                     lrn_lr,
-                    pl_log_reg,
                     lrn_lda),
   resampling = list(cv5)
 ), store_models = TRUE)
+
 res
+learner
 
 res$aggregate(list(msr("classif.ce"),
                        msr("classif.acc"),
@@ -71,10 +66,12 @@ res$aggregate(list(msr("classif.ce"),
                        msr("classif.fpr"),
                        msr("classif.fnr")))
 
+
+#Model improvements
 learner$param_set
 trees <- res$resample_result(2)
 
-tree1 <- trees$learners[[1]]
+tree1 <- trees$learners[[5]]
 
 tree1_rpart <- tree1$model
 
@@ -86,9 +83,37 @@ lrn_cart_cv <- lrn("classif.rpart", predict_type = "prob", xval = 10)
 res_cart_cv <- resample(bank_task, lrn_cart_cv, cv5, store_models = TRUE)
 rpart::plotcp(res_cart_cv$learners[[5]]$model)
 
+#Hyperparameter Optimization
 lrn_cart_cp <- lrn("classif.rpart", predict_type = "prob", cp = 0.014, id = "cartcp")
+res_cart_cp <- resample(bank_task, lrn_cart_cp, cv5, store_models = TRUE)
+
+#dealing with missingness and factors
+pl_missing <- po("fixfactors") %>>%
+  po("removeconstants") %>>%
+  po("imputesample", affect_columns = selector_type(c("ordered", "factor"))) %>>%
+  po("imputemean")
+
+pl_log_reg <- pl_missing %>>%
+  po(lrn_lr,id = 'lr')
+
+res2 <- benchmark(data.table(
+  task       = list(bank_task),
+  learner    = list(lrn_baseline,
+                    lrn_cart,
+                    lrn_cart_cp,
+                    lrn_lr,
+                    pl_log_reg,
+                    lrn_lda),
+  resampling = list(cv5)
+), store_models = TRUE)
+res2$aggregate(list(msr("classif.ce"),
+                   msr("classif.acc"),
+                   msr("classif.auc"),
+                   msr("classif.fpr"),
+                   msr("classif.fnr")))
 
 
+#super learning model
 lrn_ranger   <- lrn("classif.ranger", predict_type = "prob")
 lrn_xgboost  <- lrn("classif.xgboost", predict_type = "prob")
 lrnsp_log_reg <- lrn("classif.log_reg", predict_type = "prob", id = "super")
@@ -123,5 +148,3 @@ res_spr$aggregate(list(msr("classif.ce"),
                        msr("classif.acc"),
                        msr("classif.fpr"),
                        msr("classif.fnr")))
-
-library()
